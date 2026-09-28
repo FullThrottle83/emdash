@@ -1,0 +1,29 @@
+version: 1
+provider: "jules"
+baseBranch: "main"
+branchPrefix: "fix/"
+
+verify:
+  stages:
+    - id: "unit"
+      kind: "test"
+      cmd: "pnpm --filter emdash exec vitest run tests/unit/media/media-value.test.ts tests/unit/schema/zod-generator.test.ts"
+      required: true
+      networkAccess: "allow"
+    - id: "lint"
+      kind: "lint"
+      cmd: "pnpm lint:quick"
+      required: true
+      networkAccess: "allow"
+  required: true
+
+scope:
+  deny:
+    - ".github/**"
+    - "packages/core/src/database/migrations/**"
+    - "pnpm-lock.yaml"
+
+tier: "ultra"
+limits:
+  daily_tasks: 300
+  concurrency: 60
