@@ -18,7 +18,8 @@ Instructions for AI coding agents working in this repository. Platform instructi
 2. Get the stack, package manager and commands from manifests, lockfiles, scripts and CI config. Do not guess them, and do not add a second lockfile.
 3. Read the files the task touches, their callers and their tests. Widen the search only when needed.
 4. When unsure about a library or platform API, check the installed version's types or its version-matched docs. If you cannot, say so.
-5. Run the narrowest relevant check to get a baseline. Note failures that were already there.
+5. In repositories where main is kept green (such as Emdash), do not run checks before editing merely to establish a baseline. Only run the narrowest relevant reproduction test when diagnosing an existing bug.
+6. Start from the latest upstream EmDash. Run `git fetch origin` and check `git rev-list --count HEAD..origin/main`. Base new work branches on the current `origin/main`, and run `pnpm install` after syncing so `node_modules` matches the lockfile. If your branch or local `main` is behind, say so and ask before rebasing or merging. Never push to `origin`; catching up never justifies a reset or history rewrite.
 
 ### While editing
 
@@ -68,6 +69,10 @@ Write the report in the language the user writes in. Code, comments, commits and
 - **Handoff:** only if work is unfinished. Goal, current state, blocker, next concrete step.
 
 Never claim that something works, is accessible, is secure or is fast without having checked it.
+
+### Project Notes
+
+- Kysely 0.29's `DefaultQueryExecutor` uses private `#`-fields, and Cloudflare D1 with Sessions creates a new Kysely instance per request. An in-memory cache keyed on the `db` or driver instance will never hit across requests on D1. Use `requestCached` for request-scoped deduplication, or follow the versioned options/objectCache pattern (`bylines/field-defs-cache.ts`) for cross-request caching.
 
 ---
 
