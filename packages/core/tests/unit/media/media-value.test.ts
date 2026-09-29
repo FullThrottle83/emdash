@@ -27,6 +27,27 @@ describe("mediaItemToValue", () => {
 			dominantColor: "#aabbcc",
 		});
 	});
+
+	it("copies caption onto the MediaValue when present", () => {
+		const item: MediaProviderItem = {
+			id: "01ABC",
+			filename: "photo.jpg",
+			mimeType: "image/jpeg",
+			width: 1200,
+			height: 800,
+			alt: "Photo of mountains",
+			caption: "A snowy mountain range at sunset",
+		};
+
+		const value = mediaItemToValue("local", item);
+
+		expect(value).toMatchObject({
+			provider: "local",
+			id: "01ABC",
+			alt: "Photo of mountains",
+			caption: "A snowy mountain range at sunset",
+		});
+	});
 });
 
 describe("local provider getEmbed", () => {
@@ -74,5 +95,31 @@ describe("local provider getEmbed", () => {
 			blurhash: "LEHV6nWB2yk8pyo0adR*.7kCMdnj",
 			dominantColor: "#aabbcc",
 		});
+	});
+});
+
+describe("image field schema validation", () => {
+	it("preserves caption on image field value and darkVariant during schema validation", async () => {
+		const { image } = await import("../../../src/fields/image.js");
+		const schema = image().schema;
+
+		const payload = {
+			id: "01ABC",
+			src: "/media/photo.jpg",
+			alt: "A mountain",
+			caption: "Snowy peak in winter",
+			width: 1200,
+			height: 800,
+			darkVariant: {
+				id: "01DEF",
+				src: "/media/photo-dark.jpg",
+				caption: "Snowy peak at night",
+			},
+		};
+
+		const parsed = schema.parse(payload);
+		expect(parsed).toEqual(payload);
+		expect(parsed?.caption).toBe("Snowy peak in winter");
+		expect(parsed?.darkVariant?.caption).toBe("Snowy peak at night");
 	});
 });

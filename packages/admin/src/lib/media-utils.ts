@@ -94,6 +94,7 @@ export function providerItemToMediaItem(
 		blurhash: item.blurhash ?? metaString(item.meta, "blurhash"),
 		dominantColor: item.dominantColor ?? metaString(item.meta, "dominantColor"),
 		alt: item.alt,
+		caption: item.caption ?? metaString(item.meta, "caption"),
 		createdAt: new Date().toISOString(),
 		provider: providerId,
 		meta: item.meta,

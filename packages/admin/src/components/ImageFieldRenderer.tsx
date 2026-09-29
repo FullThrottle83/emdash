@@ -49,6 +49,7 @@ export interface ImageFieldValue {
 	filename?: string;
 	mimeType?: string;
 	alt?: string;
+	caption?: string;
 	width?: number;
 	height?: number;
 	focalX?: number;
@@ -89,6 +90,7 @@ function mediaItemToImageFieldValue(item: MediaItem): ImageFieldValue {
 		src: isDirectUrl ? item.url : undefined,
 		previewUrl: !isLocalProvider && !isDirectUrl ? item.url : undefined,
 		alt: item.alt || "",
+		caption: item.caption || undefined,
 		width: item.width,
 		height: item.height,
 		focalX: item.focalX ?? undefined,
