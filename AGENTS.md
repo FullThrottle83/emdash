@@ -19,7 +19,7 @@ Instructions for AI coding agents working in this repository. Platform instructi
 3. Read the files the task touches, their callers and their tests. Widen the search only when needed.
 4. When unsure about a library or platform API, check the installed version's types or its version-matched docs. If you cannot, say so.
 5. In repositories where main is kept green (such as Emdash), do not run checks before editing merely to establish a baseline. Only run the narrowest relevant reproduction test when diagnosing an existing bug.
-6. Start from the latest upstream EmDash. Run `git fetch origin` and check `git rev-list --count HEAD..origin/main`. Base new work branches on the current `origin/main`, and run `pnpm install` after syncing so `node_modules` matches the lockfile. If your branch or local `main` is behind, say so and ask before rebasing or merging. Never push to `origin`; catching up never justifies a reset or history rewrite.
+6. Start from the latest upstream EmDash. Run `git fetch origin` and check `git rev-list --count HEAD..origin/main`. Base new work branches on the current `origin/main`, and run `pnpm install` after syncing so `node_modules` matches the lockfile. Never push to `origin`. For shared branches or local `main`, catching up never justifies an uncoordinated reset or history rewrite; for unshared work branches, rebase cleanly onto `origin/main` as documented in [Contributing upstream](#contributing-upstream-fork-workflow).
 
 ### While editing
 
