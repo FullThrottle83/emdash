@@ -40,7 +40,7 @@ If nobody can answer (for example in an async run), do not do it. Describe it in
 ### Never, unless the user explicitly asks in this task
 
 - Deploy, release, publish packages, merge, push to shared branches, or change anything in production, including migrations against live data. Pushing your own work branch or opening a PR as part of the platform's normal flow is fine.
-- Force-push, rewrite history, hard-reset, clean untracked files, delete branches, or discard changes you did not make.
+- Force-push, rewrite history, hard-reset, clean untracked files, delete branches, or discard changes you did not make (rebasing and force-pushing your own unshared work branch to fork during upstream sync is excepted).
 - Read real secret files such as `.env`. Use example or template files instead. Never print, log or commit secrets or personal data.
 - Take actions that cost money or send anything to people or external services.
 
@@ -81,7 +81,7 @@ Never claim that something works, is accessible, is secure or is fast without ha
 ### Project Notes
 
 - Kysely 0.29's `DefaultQueryExecutor` uses private `#`-fields, and Cloudflare D1 with Sessions creates a new Kysely instance per request. An in-memory cache keyed on the `db` or driver instance will never hit across requests on D1. Use `requestCached` for request-scoped deduplication, or follow the versioned options/objectCache pattern (`bylines/field-defs-cache.ts`) for cross-request caching.
-- `pnpm format:check` runs `oxfmt --ignore-path .gitignore`, so untracked files that only `.git/info/exclude` hides still fail it on branches based on `origin/main`. Agent tooling must write evidence and state outside the repository (the earlier `.agent/evidence` and `.agent/state` now live in `../.agent/emdash-archive/`).
+- `pnpm format:check` runs `oxfmt --ignore-path .gitignore`, so untracked files that only `.git/info/exclude` hides still fail it on branches based on `origin/main`. Agent tooling (Antigravity, agentctl) writes evidence, state and reports only outside the repository, in `../jules-workbench/evidence/` or `../.agent/`, never in `emdash/.agent/`. The earlier `.agent/evidence` and `.agent/state` now live in `../.agent/emdash-archive/`.
 
 ---
 
