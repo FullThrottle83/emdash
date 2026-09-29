@@ -27,6 +27,75 @@ function resolveSearchTokenizer(tokenize?: SearchTokenizer): SearchTokenizer {
 	return tokenize;
 }
 
+const HOLDER_KEY = Symbol.for("emdash:search-metadata");
+const g = globalThis as Record<symbol, unknown>;
+
+export interface SearchMetadataHolder {
+	promise: Promise<unknown> | null;
+	fetchedAt: number;
+}
+
+export function getSearchMetadataHolder(): SearchMetadataHolder {
+	// eslint-disable-next-line typescript/no-unsafe-type-assertion -- globalThis singleton pattern (see request-cache.ts)
+	let holder = g[HOLDER_KEY] as SearchMetadataHolder | undefined;
+	if (!holder) {
+		holder = { promise: null, fetchedAt: 0 };
+		g[HOLDER_KEY] = holder;
+	}
+	return holder;
+}
+
+export function invalidateSearchMetadataCache(): void {
+	const holder = getSearchMetadataHolder();
+	holder.promise = null;
+	holder.fetchedAt = 0;
+}
+
+export function resetSearchMetadataCacheForTests(): void {
+	invalidateSearchMetadataCache();
+}
+
+/**
+ * Safely parse a search_config JSON string from `_emdash_collections`.
+ */
+export function parseSearchConfig(
+	raw: string | null | undefined,
+	titleField?: string | null,
+): SearchConfig | null {
+	if (!raw) return null;
+	try {
+		const parsed: unknown = JSON.parse(raw);
+		if (
+			typeof parsed !== "object" ||
+			parsed === null ||
+			!("enabled" in parsed) ||
+			typeof parsed.enabled !== "boolean"
+		) {
+			return null;
+		}
+		const config: SearchConfig = { enabled: parsed.enabled };
+		if (titleField) config.titleField = titleField;
+		if ("weights" in parsed && typeof parsed.weights === "object" && parsed.weights !== null) {
+			const weights: Record<string, number> = {};
+			for (const [k, v] of Object.entries(parsed.weights)) {
+				if (typeof v === "number") {
+					weights[k] = v;
+				}
+			}
+			config.weights = weights;
+		}
+		if ("tokenize" in parsed) {
+			if (!isSearchTokenizer(parsed.tokenize)) {
+				return null;
+			}
+			config.tokenize = parsed.tokenize;
+		}
+		return config;
+	} catch {
+		return null;
+	}
+}
+
 /**
  * FTS5 Manager
  *
@@ -35,6 +104,17 @@ function resolveSearchTokenizer(tokenize?: SearchTokenizer): SearchTokenizer {
  */
 export class FTSManager {
 	constructor(private db: Kysely<Database>) {}
+
+	/**
+	 * Invalidate the isolate-wide search metadata cache.
+	 */
+	invalidateCache(): void {
+		invalidateSearchMetadataCache();
+	}
+
+	static invalidateCache(): void {
+		invalidateSearchMetadataCache();
+	}
 
 	/**
 	 * Validate a collection slug and its searchable field names.
@@ -394,38 +474,7 @@ export class FTSManager {
 			return null;
 		}
 
-		try {
-			const parsed: unknown = JSON.parse(result.search_config);
-			if (
-				typeof parsed !== "object" ||
-				parsed === null ||
-				!("enabled" in parsed) ||
-				typeof parsed.enabled !== "boolean"
-			) {
-				return null;
-			}
-			const config: SearchConfig = { enabled: parsed.enabled };
-			if (result.title_field) config.titleField = result.title_field;
-			if ("weights" in parsed && typeof parsed.weights === "object" && parsed.weights !== null) {
-				// weights is a JSON-parsed object — safe to treat as Record<string, number>
-				const weights: Record<string, number> = {};
-				for (const [k, v] of Object.entries(parsed.weights)) {
-					if (typeof v === "number") {
-						weights[k] = v;
-					}
-				}
-				config.weights = weights;
-			}
-			if ("tokenize" in parsed) {
-				if (!isSearchTokenizer(parsed.tokenize)) {
-					return null;
-				}
-				config.tokenize = parsed.tokenize;
-			}
-			return config;
-		} catch {
-			return null;
-		}
+		return parseSearchConfig(result.search_config, result.title_field);
 	}
 
 	/**
@@ -440,6 +489,9 @@ export class FTSManager {
 			.set({ search_config: JSON.stringify(config) })
 			.where("slug", "=", collectionSlug)
 			.execute();
+		// After the write: a search that runs while the UPDATE is in flight
+		// would otherwise re-cache the old config.
+		this.invalidateCache();
 	}
 
 	/**

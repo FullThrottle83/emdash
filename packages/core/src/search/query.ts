@@ -12,7 +12,15 @@ import type { Database } from "../database/types.js";
 import { validateIdentifier } from "../database/validate.js";
 import { resolveConfiguredLocale } from "../i18n/config.js";
 import { getDb } from "../loader.js";
-import { FTSManager } from "./fts-manager.js";
+import { requestCached } from "../request-cache.js";
+import { getRequestContext } from "../request-context.js";
+import { isMissingTableError } from "../utils/db-errors.js";
+import {
+	FTSManager,
+	getSearchMetadataHolder,
+	invalidateSearchMetadataCache,
+	parseSearchConfig,
+} from "./fts-manager.js";
 import type {
 	SearchOptions,
 	CollectionSearchOptions,
@@ -21,7 +29,107 @@ import type {
 	SuggestOptions,
 	Suggestion,
 	SearchStats,
+	SearchConfig,
 } from "./types.js";
+
+export interface CollectionSearchMetadata {
+	searchConfig: SearchConfig | null;
+	titleField: string | null;
+	hasTitle: boolean;
+	searchableFields: readonly string[];
+}
+
+export type SearchMetadataMap = Map<string, CollectionSearchMetadata>;
+
+const REVALIDATE_WINDOW_MS = 60_000;
+
+interface MutableCollectionMeta {
+	searchConfigRaw: string | null;
+	titleField: string | null;
+	hasTitle: boolean;
+	searchableFields: string[];
+}
+
+async function fetchSearchMetadata(db: Kysely<Database>): Promise<SearchMetadataMap> {
+	try {
+		const rows = await db
+			.selectFrom("_emdash_collections as c")
+			.leftJoin("_emdash_fields as f", "f.collection_id", "c.id")
+			.select([
+				"c.slug as collection_slug",
+				"c.search_config",
+				"c.title_field",
+				"f.slug as field_slug",
+				"f.searchable",
+			])
+			.execute();
+
+		const temp = new Map<string, MutableCollectionMeta>();
+
+		for (const row of rows) {
+			let entry = temp.get(row.collection_slug);
+			if (!entry) {
+				entry = {
+					searchConfigRaw: row.search_config,
+					titleField: row.title_field,
+					hasTitle: false,
+					searchableFields: [],
+				};
+				temp.set(row.collection_slug, entry);
+			}
+			if (row.field_slug) {
+				if (row.field_slug === "title") {
+					entry.hasTitle = true;
+				}
+				if (row.searchable === 1) {
+					entry.searchableFields.push(row.field_slug);
+				}
+			}
+		}
+
+		const map: SearchMetadataMap = new Map();
+		for (const [slug, entry] of temp.entries()) {
+			map.set(slug, {
+				searchConfig: parseSearchConfig(entry.searchConfigRaw, entry.titleField),
+				titleField: entry.titleField,
+				hasTitle: entry.hasTitle,
+				searchableFields: Object.freeze(entry.searchableFields),
+			});
+		}
+
+		return map;
+	} catch (error) {
+		if (isMissingTableError(error)) {
+			return new Map();
+		}
+		throw error;
+	}
+}
+
+export async function loadSearchMetadata(db: Kysely<Database>): Promise<SearchMetadataMap> {
+	if (getRequestContext()?.dbIsIsolated === true) {
+		return requestCached("search:metadata", () => fetchSearchMetadata(db));
+	}
+
+	const holder = getSearchMetadataHolder();
+	const now = Date.now();
+	if (holder.promise && now - holder.fetchedAt <= REVALIDATE_WINDOW_MS) {
+		// eslint-disable-next-line typescript/no-unsafe-type-assertion -- only loadSearchMetadata writes holder.promise, always with a SearchMetadataMap
+		return holder.promise as Promise<SearchMetadataMap>;
+	}
+
+	const promise = fetchSearchMetadata(db).catch((error: unknown) => {
+		if (holder.promise === promise) {
+			holder.promise = null;
+			holder.fetchedAt = 0;
+		}
+		throw error;
+	});
+
+	holder.promise = promise;
+	holder.fetchedAt = now;
+	return promise;
+}
 
 /**
  * Marker stored in the `id` slot of a search pagination cursor.
@@ -123,15 +231,21 @@ export async function searchWithDb(
 	query: string,
 	options: SearchOptions = {},
 ): Promise<SearchResponse> {
-	const ftsManager = new FTSManager(db);
 	const limit = options.limit ?? 20;
 	const status = options.status ?? "published";
 	const offset = options.cursor ? decodeSearchOffset(options.cursor) : 0;
 
+	const metadata = await loadSearchMetadata(db);
+
 	// Get searchable collections
 	let collections = options.collections;
 	if (!collections || collections.length === 0) {
-		collections = await getSearchableCollections(db);
+		collections = [];
+		for (const [slug, meta] of metadata.entries()) {
+			if (meta.searchConfig?.enabled) {
+				collections.push(slug);
+			}
+		}
 	}
 
 	if (collections.length === 0) {
@@ -146,11 +260,10 @@ export async function searchWithDb(
 
 	// Search each collection and merge results
 	const allResults: SearchResult[] = [];
-	const titleColumns = await ftsManager.getCollectionsWithTitleColumn(collections);
 
 	for (const collection of collections) {
-		const config = await ftsManager.getSearchConfig(collection);
-		if (!config?.enabled) {
+		const meta = metadata.get(collection);
+		if (!meta?.searchConfig?.enabled) {
 			continue;
 		}
 
@@ -164,9 +277,10 @@ export async function searchWithDb(
 				limit: perCollectionLimit,
 				scope: options.scope,
 			},
-			config.weights,
-			titleColumns.has(collection),
-			config.titleField,
+			meta.searchConfig.weights,
+			meta.hasTitle,
+			meta.searchConfig.titleField ?? meta.titleField ?? undefined,
+			meta.searchableFields,
 		);
 
 		allResults.push(...collectionResults);
@@ -206,10 +320,10 @@ export async function searchCollection(
 	query: string,
 	options: CollectionSearchOptions = {},
 ): Promise<SearchResponse> {
-	const ftsManager = new FTSManager(db);
-	const config = await ftsManager.getSearchConfig(collection);
+	const metadata = await loadSearchMetadata(db);
+	const meta = metadata.get(collection);
 
-	if (!config?.enabled) {
+	if (!meta?.searchConfig?.enabled) {
 		return { items: [] };
 	}
 
@@ -229,9 +343,10 @@ export async function searchCollection(
 			limit: offset + limit + 1,
 			scope: options.scope,
 		},
-		config.weights,
-		undefined,
-		config.titleField,
+		meta.searchConfig.weights,
+		meta.hasTitle,
+		meta.searchConfig.titleField ?? meta.titleField ?? undefined,
+		meta.searchableFields,
 	);
 
 	const items = fetched.slice(offset, offset + limit);
@@ -252,6 +367,7 @@ async function searchSingleCollection(
 	weights?: Record<string, number>,
 	hasTitle?: boolean,
 	titleField?: string,
+	searchableFields?: readonly string[],
 ): Promise<SearchResult[]> {
 	// Validate before any raw SQL interpolation
 	validateIdentifier(collection, "collection slug");
@@ -263,11 +379,6 @@ async function searchSingleCollection(
 	const status = options.status ?? "published";
 	const locale = options.locale ? resolveConfiguredLocale(options.locale) : undefined;
 
-	// Check if FTS table exists
-	if (!(await ftsManager.ftsTableExists(collection))) {
-		return [];
-	}
-
 	// Escape the query for FTS5
 	const escapedQuery = escapeQuery(query);
 	if (!escapedQuery) {
@@ -275,7 +386,7 @@ async function searchSingleCollection(
 	}
 
 	// Get searchable fields for snippet generation
-	const searchableFields = await ftsManager.getSearchableFields(collection);
+	const fields = searchableFields ?? (await ftsManager.getSearchableFields(collection));
 
 	// Title scope restricts the FTS5 match to the collection's title column.
 	// The scoped column must be one of the indexed searchable fields; a
@@ -284,9 +395,9 @@ async function searchSingleCollection(
 	let matchQuery = escapedQuery;
 	if (options.scope === "title") {
 		const titleColumn =
-			titleField && searchableFields.includes(titleField)
+			titleField && fields.includes(titleField)
 				? titleField
-				: searchableFields.includes("title")
+				: fields.includes("title")
 					? "title"
 					: undefined;
 		if (!titleColumn) {
@@ -317,9 +428,9 @@ async function searchSingleCollection(
 	// Format: bm25(table, weight1, weight2, ...)
 	// First two weights are for 'id' and 'locale' columns (UNINDEXED, so 0)
 	let bm25Args = "";
-	if (weights && searchableFields.length > 0) {
+	if (weights && fields.length > 0) {
 		const weightValues = ["0", "0"]; // id column, locale column
-		for (const field of searchableFields) {
+		for (const field of fields) {
 			weightValues.push(String(weights[field] ?? 1));
 		}
 		bm25Args = weightValues.join(", ");
@@ -357,6 +468,10 @@ async function searchSingleCollection(
 		LIMIT ${limit}
 	`.execute(db);
 	} catch (error) {
+		if (isMissingTableError(error)) {
+			invalidateSearchMetadataCache();
+			return [];
+		}
 		// FTS5 returns syntax errors for queries with unbalanced quotes,
 		// stray operators, or other malformed input. Treat these as
 		// "no matches" so the user gets an empty result rather than an
@@ -438,10 +553,17 @@ export async function getSuggestions(
 	const limit = options.limit ?? 5;
 	const locale = options.locale ? resolveConfiguredLocale(options.locale) : undefined;
 
+	const metadata = await loadSearchMetadata(db);
+
 	// Get searchable collections
 	let collections = options.collections;
 	if (!collections || collections.length === 0) {
-		collections = await getSearchableCollections(db);
+		collections = [];
+		for (const [slug, meta] of metadata.entries()) {
+			if (meta.searchConfig?.enabled) {
+				collections.push(slug);
+			}
+		}
 	}
 
 	if (collections.length === 0) {
@@ -450,11 +572,10 @@ export async function getSuggestions(
 
 	const suggestions: Suggestion[] = [];
 	const ftsManager = new FTSManager(db);
-	const titleColumns = await ftsManager.getCollectionsWithTitleColumn(collections);
 
 	for (const collection of collections) {
-		const config = await ftsManager.getSearchConfig(collection);
-		if (!config?.enabled) {
+		const meta = metadata.get(collection);
+		if (!meta?.searchConfig?.enabled) {
 			continue;
 		}
 
@@ -464,11 +585,12 @@ export async function getSuggestions(
 		// Otherwise fall back to the optional `title` field; collections with
 		// neither can't produce a suggestion and are skipped (selecting a missing
 		// column would error).
+		const titleField = meta.searchConfig.titleField ?? meta.titleField;
 		let titleExpr;
-		if (config.titleField) {
-			validateIdentifier(config.titleField, "title field");
-			titleExpr = sql`c.${sql.ref(config.titleField)}`;
-		} else if (titleColumns.has(collection)) {
+		if (titleField) {
+			validateIdentifier(titleField, "title field");
+			titleExpr = sql`c.${sql.ref(titleField)}`;
+		} else if (meta.hasTitle) {
 			titleExpr = sql`c.title`;
 		} else {
 			continue;
@@ -509,6 +631,10 @@ export async function getSuggestions(
 				LIMIT ${limit}
 			`.execute(db);
 		} catch (error) {
+			if (isMissingTableError(error)) {
+				invalidateSearchMetadataCache();
+				continue;
+			}
 			// Same swallow as searchSingleCollection: malformed prefix
 			// queries should yield no suggestions, not surface DB errors.
 			// Intentionally not logged (anonymous-triggerable, echoes
@@ -554,22 +680,14 @@ export async function getSearchStats(db: Kysely<Database>): Promise<SearchStats>
  * Get list of collections with search enabled
  */
 async function getSearchableCollections(db: Kysely<Database>): Promise<string[]> {
-	const results = await db
-		.selectFrom("_emdash_collections")
-		.select(["slug", "search_config"])
-		.execute();
-
-	return results
-		.filter((r) => {
-			if (!r.search_config) return false;
-			try {
-				const config = JSON.parse(r.search_config);
-				return config.enabled === true;
-			} catch {
-				return false;
-			}
-		})
-		.map((r) => r.slug);
+	const metadata = await loadSearchMetadata(db);
+	const slugs: string[] = [];
+	for (const [slug, meta] of metadata.entries()) {
+		if (meta.searchConfig?.enabled) {
+			slugs.push(slug);
+		}
+	}
+	return slugs;
 }
 
 /**

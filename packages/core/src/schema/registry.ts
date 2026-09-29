@@ -38,7 +38,7 @@ import {
 	markContentMediaUsageCollectionStaleSafely,
 } from "../media/usage/content-refresh.js";
 import { finishMediaUsageCollectionDeletion } from "../media/usage/maintenance-engine.js";
-import { FTSManager } from "../search/fts-manager.js";
+import { FTSManager, invalidateSearchMetadataCache } from "../search/fts-manager.js";
 import { getPortableTableSpec } from "../transfer/format/columns.js";
 import { canonicalDigest } from "../transfer/format/digest.js";
 import type { CollectionRecord, FieldRecord } from "../transfer/format/kinds.js";
@@ -337,9 +337,11 @@ export class SchemaRegistry {
 	constructor(private db: Kysely<Database>) {}
 
 	/**
-	 * Notify the dev typegen hook that the schema has changed.
+	 * Notify schema-derived consumers (the search metadata cache and the dev
+	 * typegen hook) that the schema has changed. Call after the write commits.
 	 */
 	private notifyTypegen(): void {
+		invalidateSearchMetadataCache();
 		refreshDevTypes();
 	}
 

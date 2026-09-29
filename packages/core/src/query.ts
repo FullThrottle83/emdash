@@ -48,6 +48,7 @@ import { requestCached } from "./request-cache.js";
 import { getRequestContext } from "./request-context.js";
 import { resetRegisteredCollectionsCache } from "./schema/collection-slugs-cache.js";
 import { compileUrlPattern } from "./schema/url-pattern.js";
+import { invalidateSearchMetadataCache } from "./search/fts-manager.js";
 import type { TaxonomyTerm } from "./taxonomies/types.js";
 import { isMissingColumnError, isMissingTableError } from "./utils/db-errors.js";
 import {
@@ -1842,6 +1843,7 @@ export function invalidateUrlPatternCache(): void {
 	urlPatternCache.patterns = null;
 	resetRegisteredCollectionsCache();
 	invalidateSchemaObjectCache();
+	invalidateSearchMetadataCache();
 }
 
 /**
