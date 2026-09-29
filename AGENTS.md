@@ -70,9 +70,18 @@ Write the report in the language the user writes in. Code, comments, commits and
 
 Never claim that something works, is accessible, is secure or is fast without having checked it.
 
+### Contributing upstream (fork workflow)
+
+- Before investigating a bug or drafting an issue or PR, run `git fetch origin main` and `git log origin/main -n 20 -- <path>` to confirm it is not already fixed upstream.
+- Reproduce every bug with a failing test on a clean `origin/main` first. No speculative reports without that evidence.
+- One intent per PR. Each work branch is a single atomic commit directly on the current `origin/main`, with no local governance commits (`AGENTS.md` edits, `.agent/`) in its history. Force-pushing your own work branch to `fork` is expected when rebasing it.
+- Before a PR is drafted, all of these pass locally: `pnpm format:check && pnpm build && pnpm typecheck && pnpm lint && pnpm lint:quick && pnpm lint:json`, the relevant vitest suites, and `pnpm query-counts` (sqlite and d1) when a query path changed.
+- PR text is short and factual: before/after measurements, links to the affected upstream lines, and the reproduction test. No promotional language.
+
 ### Project Notes
 
 - Kysely 0.29's `DefaultQueryExecutor` uses private `#`-fields, and Cloudflare D1 with Sessions creates a new Kysely instance per request. An in-memory cache keyed on the `db` or driver instance will never hit across requests on D1. Use `requestCached` for request-scoped deduplication, or follow the versioned options/objectCache pattern (`bylines/field-defs-cache.ts`) for cross-request caching.
+- `pnpm format:check` runs `oxfmt --ignore-path .gitignore`, so untracked files that only `.git/info/exclude` hides still fail it on branches based on `origin/main`. Agent tooling must write evidence and state outside the repository (the earlier `.agent/evidence` and `.agent/state` now live in `../.agent/emdash-archive/`).
 
 ---
 
